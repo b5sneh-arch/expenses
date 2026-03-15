@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Expense Tracker</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0C0C0C;color:#F0F0F0;font-family:'Inter',sans-serif;min-height:100vh}
+::-webkit-scrollbar{width:4px}
+::-webkit-scrollbar-track{background:#111}
+::-webkit-scrollbar-thumb{background:#2A2A2A;border-radius:2px}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const{useState,useEffect,useRef,useCallback}=React;
+
+const CATS=[
+  {n:"Food & Dining",i:"🍽️",c:"#FF6B6B"},
+  {n:"Groceries",    i:"🛒",c:"#51CF66"},
+  {n:"Transport",    i:"🚗",c:"#339AF0"},
+  {n:"Shopping",     i:"🛍️",c:"#F59F00"},
+  {n:"Entertainment",i:"🎬",c:"#CC5DE8"},
+  {n:"Health",       i:"💊",c:"#FF8787"},
+  {n:"Bills",        i:"⚡",c:"#748FFC"},
+  {n:"Other",        i:"📦",c:"#868E96"},
+];
+
+const CAT_MAP={
+  food:"Food & Dining",dining:"Food & Dining",restaurant:"Food & Dining",lunch:"Food & Dining",dinner:"Food & Dining",breakfast:"Food & Dining",
+  groceries:"Groceries",grocery:"Groceries",supermarket:"Groceries",
+  transport:"Transport",uber:"Transport",taxi:"Transport",bus:"Transport",train:"Transport",fuel:"Transport",gas:"Transport",petrol:"Transport",
+  shopping:"Shopping",clothes:"Shopping",amazon:"Shopping",
+  entertainment:"Entertainment",movie:"Entertainment",cinema:"Entertainment",netflix:"Entertainment",
+  health:"Health",pharmacy:"Health",medicine:"Health",doctor:"Health",
+  bills:"Bills",bill:"Bills",electricity:"Bills",internet:"Bills",phone:"Bills",rent:"Bills",
+  other:"Other",misc:"Other",
+};
+
+const resolvecat=r=>{if(!r)return"Other";const k=r.toLowerCase().trim();return CAT_MAP[k]||CATS.find(c=>c.n.toLowerCase().includes(k))?.n||"Other"};
+const catinfo=n=>CATS.find(c=>c.n===n)||CATS[7];
+const todayStr=()=>new Date().toISOString().split("T")[0];
+const fmtAmt=n=>"$"+parseFloat(n||0).toFixed(2);
+const fmtDate=s=>{if(!s)return"";const d=new Date(s+"T12:00:00");return d.toLocaleDateString("en-US",{month:"short",day:"numeric"})};
+
+const getWeekBounds=(off=0)=>{
+  const n=new Date(),day=n.getDay(),diff=n.getDate()-day+(day===0?-6:1);
+  const s=new Date(n);s.setDate(diff+off*7);s.setHours(0,0,0,0);
+  const e=new Date(s);e.setDate(e.getDate()+6);e.setHours(23,59,59,999);
+  return{s,e};
+};
+const inRange=(ds,{s,e})=>{const d=new Date(ds+"T12:00:00");return d>=s&&d<=e};
+const sum=arr=>arr.reduce((t,e)=>t+parseFloat(e.amt||0),0);
+const getCatTotals=exps=>{const t={};exps.forEach(e=>{t[e.cat]=(t[e.cat]||0)+parseFloat(e.amt||0);});return Object.entries(t).sort((a,b)=>b[1]-a[1]);};
+
+// Donut Chart Component
+function DonutChart({data,total}){
+  const ref=useRef();
+  const chartRef=useRef();
+  useEffect(()=>{
+    if(!ref.current||!data.length)return;
+    if(chartRef.current)chartRef.current.destroy();
+    chartRef.current=new Chart(ref.current,{
+      type:"doughnut",
+      data:{
+        labels:data.map(([n])=>n),
+        datasets:[{data:data.map(([,v])=>v),backgroundColor:data.map(([n])=>catinfo(n).c),borderWidth:2,borderColor:"#0C0C0C",hoverBorderColor:"#0C0C0C"}]
+      },
+      options:{
+        responsive:true,maintainAspectRatio:true,cutout:"68%",
+        plugins:{
+          legend:{display:false},
+          tooltip:{callbacks:{label:ctx=>" "+ctx.label+": "+fmtAmt(ctx.raw)+" ("+((ctx.raw/total)*100).toFixed(1)+"%)"}},
+        }
+      }
+    });
+    return()=>{if(chartRef.current)chartRef.current.destroy()};
+  },[data,total]);
+  if(!data.length)return<div style={{height:160,display:"flex",alignItems:"center",justifyContent:"center",color:"#333",fontSize:12}}>No data yet</div>;
+  return(
+    <div style={{position:"relative",width:140,height:140,flexShrink:0}}>
+      <canvas ref={ref}/>
+      <div style={{position:"absolute",top:"50%",left:"50%",transform:"translate(-50%,-50%)",textAlign:"center",pointerEvents:"none"}}>
+        <div style={{fontFamily:"'JetBrains Mono',monospace",fontSize:14,fontWeight:600,color:"#F0B429"}}>{fmtAmt(total)}</div>
+        <div style={{fontSize:9,color:"#555",marginTop:2}}>total</div>
+      </div>
+    </div>
+  );
+}
+
+// Bar Chart — daily spend
+function DailyChart({expenses}){
+  const ref=useRef();
+  const chartRef=useRef();
+  useEffect(()=>{
+    if(!ref.current)return;
+    if(chartRef.current)chartRef.current.destroy();
+    const wb=getWeekBounds(0);
+    const days=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+    const todayDow=new Date().getDay();
+    const todayIdx=todayDow===0?6:todayDow-1;
+    const vals=days.map((_,i)=>{
+      const d=new Date(wb.s);d.setDate(wb.s.getDate()+i);
+      const ds=d.toISOString().split("T")[0];
+      return expenses.filter(e=>e.date===ds).reduce((t,e)=>t+parseFloat(e.amt||0),0);
+    });
+    chartRef.current=new Chart(ref.current,{
+      type:"bar",
+      data:{
+        labels:days,
+        datasets:[{data:vals,backgroundColor:days.map((_,i)=>i===todayIdx?"#F0B429":"#1E1E1E"),borderRadius:5,borderSkipped:false}]
+      },
+      options:{
+        responsive:true,maintainAspectRatio:false,
+        plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>" "+fmtAmt(ctx.raw)}}},
+        scales:{
+          x:{grid:{display:false},ticks:{color:"#444",font:{size:10}}},
+          y:{grid:{color:"#161616"},ticks:{color:"#444",font:{size:10},callback:v=>"$"+v},border:{display:false},beginAtZero:true}
+        }
+      }
+    });
+    return()=>{if(chartRef.current)chartRef.current.destroy()};
+  },[expenses]);
+  return<canvas ref={ref} style={{width:"100%",height:"100%"}}/>;
+}
+
+// Line Chart — 30 day trend
+function TrendChart({expenses}){
+  const ref=useRef();
+  const chartRef=useRef();
+  useEffect(()=>{
+    if(!ref.current)return;
+    if(chartRef.current)chartRef.current.destroy();
+    const labels=[],vals=[];
+    for(let i=29;i>=0;i--){
+      const d=new Date();d.setDate(d.getDate()-i);
+      const ds=d.toISOString().split("T")[0];
+      labels.push(i%7===0?d.toLocaleDateString("en-US",{month:"short",day:"numeric"}):"");
+      vals.push(expenses.filter(e=>e.date===ds).reduce((t,e)=>t+parseFloat(e.amt||0),0));
+    }
+    chartRef.current=new Chart(ref.current,{
+      type:"line",
+      data:{
+        labels,
+        datasets:[{data:vals,borderColor:"#F0B429",borderWidth:2,pointRadius:0,fill:true,
+          backgroundColor:(ctx)=>{const g=ctx.chart.ctx.createLinearGradient(0,0,0,ctx.chart.height);g.addColorStop(0,"rgba(240,180,41,0.2)");g.addColorStop(1,"rgba(240,180,41,0)");return g;},
+          tension:0.4}]
+      },
+      options:{
+        responsive:true,maintainAspectRatio:false,
+        plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>" "+fmtAmt(ctx.raw)}}},
+        scales:{
+          x:{grid:{display:false},ticks:{color:"#444",font:{size:9}},border:{display:false}},
+          y:{grid:{color:"#161616"},ticks:{color:"#444",font:{size:9},callback:v=>"$"+v},border:{display:false},beginAtZero:true}
+        }
+      }
+    });
+    return()=>{if(chartRef.current)chartRef.current.destroy()};
+  },[expenses]);
+  return<canvas ref={ref} style={{width:"100%",height:"100%"}}/>;
+}
+
+const S={
+  card:{background:"#111",border:"1px solid #1A1A1A",borderRadius:12,padding:"16px 14px"},
+  label:{fontSize:9,fontWeight:600,color:"#444",textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:8},
+  secTitle:{fontSize:10,fontWeight:700,color:"#F0B429",textTransform:"uppercase",letterSpacing:"0.12em",marginBottom:14,paddingBottom:8,borderBottom:"1px solid #1A1A1A"},
+  fab:{position:"fixed",bottom:28,right:24,width:52,height:52,background:"#F0B429",color:"#0C0C0C",border:"none",borderRadius:"50%",fontSize:24,fontWeight:300,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",zIndex:50,boxShadow:"0 4px 20px rgba(240,180,41,0.4)"},
+  overlay:{position:"fixed",inset:0,background:"rgba(0,0,0,0.75)",zIndex:100,display:"flex",alignItems:"flex-end",justifyContent:"center"},
+  modal:{background:"#141414",borderRadius:"20px 20px 0 0",width:"100%",maxWidth:480,padding:"24px 20px 40px",borderTop:"1px solid #2A2A2A"},
+  input:{width:"100%",background:"#0C0C0C",border:"1px solid #222",borderRadius:10,padding:"12px 14px",color:"#F0F0F0",fontFamily:"'Inter',sans-serif",fontSize:14,outline:"none",marginBottom:12},
+  chip:(on)=>({background:on?"rgba(240,180,41,0.1)":"#0C0C0C",border:on?"1px solid #F0B429":"1px solid #222",borderRadius:9,padding:"9px 4px",textAlign:"center",cursor:"pointer",transition:"all 0.12s"}),
+  btn:{width:"100%",background:"#F0B429",color:"#0C0C0C",border:"none",borderRadius:10,padding:14,fontFamily:"'Inter',sans-serif",fontSize:14,fontWeight:600,cursor:"pointer",marginTop:4},
+  tab:(on)=>({flex:1,textAlign:"center",padding:"11px 4px",fontSize:10,fontWeight:600,cursor:"pointer",letterSpacing:"0.08em",textTransform:"uppercase",borderBottom:on?"2px solid #F0B429":"2px solid transparent",color:on?"#F0B429":"#444",transition:"all 0.15s"}),
+};
+
+export default function App(){
+  const[exps,setExps]=useState([]);
+  const[tab,setTab]=useState("dashboard");
+  const[showAdd,setShowAdd]=useState(false);
+  const[form,setForm]=useState({amt:"",cat:"Food & Dining",desc:"",date:todayStr()});
+  const[loading,setLoading]=useState(true);
+
+  useEffect(()=>{
+    try{const r=localStorage.getItem("et_v4");if(r)setExps(JSON.parse(r));}catch(_){}
+    // Handle Siri URL params
+    try{
+      const p=new URL(window.location.href).searchParams;
+      const a=parseFloat(p.get("amount"));const c=p.get("category");
+      if(a&&!isNaN(a)&&c){
+        const e={id:`siri_${Date.now()}`,amt:Math.round(a*100)/100,cat:resolvecat(c),desc:"Via Siri",date:todayStr(),siri:true};
+        setExps(prev=>{const n=[e,...prev];localStorage.setItem("et_v4",JSON.stringify(n));return n;});
+        window.history.replaceState({},"",window.location.pathname);
+      }
+    }catch(_){}
+    setLoading(false);
+  },[]);
+
+  const persist=useCallback(data=>{try{localStorage.setItem("et_v4",JSON.stringify(data));}catch(_){}}, []);
+
+  const addExp=()=>{
+    const a=parseFloat(form.amt);
+    if(!a||isNaN(a)||a<=0)return;
+    const e={id:`${Date.now()}`,amt:Math.round(a*100)/100,cat:form.cat,desc:form.desc.trim(),date:form.date};
+    const n=[e,...exps];setExps(n);persist(n);
+    setForm({amt:"",cat:"Food & Dining",desc:"",date:todayStr()});setShowAdd(false);
+  };
+  const delExp=id=>{const n=exps.filter(e=>e.id!==id);setExps(n);persist(n);};
+
+  const now=new Date();
+  const todayExps=exps.filter(e=>e.date===todayStr());
+  const wb=getWeekBounds(0),lwb=getWeekBounds(-1);
+  const twExps=exps.filter(e=>inRange(e.date,wb));
+  const lwExps=exps.filter(e=>inRange(e.date,lwb));
+  const mExps=exps.filter(e=>{const d=new Date(e.date+"T12:00:00");return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear();});
+  const tT=sum(todayExps),wT=sum(twExps),lwT=sum(lwExps),mT=sum(mExps);
+  const wChg=lwT>0?((wT-lwT)/lwT*100):null;
+  const mCats=getCatTotals(mExps);
+  const twCats=Object.fromEntries(getCatTotals(twExps));
+  const lwCats=Object.fromEntries(getCatTotals(lwExps));
+
+  if(loading)return<div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:"#0C0C0C",color:"#F0B429",fontFamily:"sans-serif",fontSize:16}}>Loading…</div>;
+
+  return(
+    <div style={{maxWidth:900,margin:"0 auto",padding:"20px 16px 100px",minHeight:"100vh"}}>
+      {/* HEADER */}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:24}}>
+        <div>
+          <span style={{fontSize:24,fontWeight:700,color:"#fff",letterSpacing:"-0.03em"}}>Expense</span>
+          <span style={{fontSize:24,fontWeight:300,color:"#F0B429",letterSpacing:"-0.03em"}}>.</span>
+        </div>
+        <div style={{fontSize:11,color:"#444",background:"#111",border:"1px solid #1A1A1A",borderRadius:6,padding:"4px 12px",fontFamily:"'JetBrains Mono',monospace"}}>
+          {now.toLocaleDateString("en-US",{month:"long",year:"numeric"})}
+        </div>
+      </div>
+
+      {/* TABS */}
+      <div style={{display:"flex",borderBottom:"1px solid #1A1A1A",marginBottom:20}}>
+        {["dashboard","transactions"].map(t=>(
+          <div key={t} style={S.tab(tab===t)} onClick={()=>setTab(t)}>{t}</div>
+        ))}
+      </div>
+
+      {tab==="dashboard"&&(<>
+        {/* STAT CARDS */}
+        <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:16}}>
+          {[
+            {lbl:"Today",amt:tT,color:"#51CF66",sub:todayExps.length+" items"},
+            {lbl:"This Week",amt:wT,color:"#F0B429",sub:wChg!==null?(wChg>=0?"▲":"▼")+Math.abs(wChg).toFixed(1)+"% vs last":"—",subColor:wChg===null?"#444":wChg>0?"#FF6B6B":"#51CF66"},
+            {lbl:"Last Week",amt:lwT,color:"#444",sub:""},
+            {lbl:"This Month",amt:mT,color:"#fff",sub:mExps.length+" transactions"},
+          ].map((c,i)=>(
+            <div key={i} style={{...S.card,borderTop:"2px solid "+c.color}}>
+              <div style={S.label}>{c.lbl}</div>
+              <div style={{fontFamily:"'JetBrains Mono',monospace",fontSize:window.innerWidth<600?16:20,fontWeight:700,color:c.color,marginBottom:4}}>{fmtAmt(c.amt)}</div>
+              <div style={{fontSize:10,color:c.subColor||"#444"}}>{c.sub}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* CHARTS ROW */}
+        <div style={{display:"grid",gridTemplateColumns:"auto 1fr",gap:12,marginBottom:12}}>
+          {/* DONUT + LEGEND */}
+          <div style={{...S.card,minWidth:260}}>
+            <div style={S.secTitle}>By Category — {now.toLocaleDateString("en-US",{month:"long"})}</div>
+            <div style={{display:"flex",gap:16,alignItems:"center"}}>
+              <DonutChart data={mCats} total={mT}/>
+              <div style={{display:"flex",flexDirection:"column",gap:7,flex:1}}>
+                {mCats.slice(0,6).map(([cn,v])=>{
+                  const c=catinfo(cn);const pct=mT>0?((v/mT)*100).toFixed(1):"0";
+                  return(
+                    <div key={cn} style={{display:"flex",alignItems:"center",gap:7}}>
+                      <div style={{width:7,height:7,borderRadius:"50%",background:c.c,flexShrink:0}}/>
+                      <div style={{fontSize:10,color:"#888",flex:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{cn}</div>
+                      <div style={{fontSize:10,fontWeight:600,color:c.c,fontFamily:"'JetBrains Mono',monospace"}}>{pct}%</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
+          {/* DAILY CHART */}
+          <div style={S.card}>
+            <div style={S.secTitle}>Daily Spend — This Week</div>
+            <div style={{height:160}}><DailyChart expenses={exps}/></div>
+          </div>
+        </div>
+
+        {/* TREND + WEEK vs WEEK */}
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
+          <div style={S.card}>
+            <div style={S.secTitle}>30-Day Trend</div>
+            <div style={{height:130}}><TrendChart expenses={exps}/></div>
+          </div>
+
+          <div style={S.card}>
+            <div style={S.secTitle}>Week vs Week</div>
+            {[...new Set([...Object.keys(twCats),...Object.keys(lwCats)])].map(cat=>{
+              const tw2=twCats[cat]||0,lw2=lwCats[cat]||0;
+              const max=Math.max(tw2,lw2,1);
+              const chg=lw2>0?((tw2-lw2)/lw2*100):null;
+              const c=catinfo(cat);
+              return(
+                <div key={cat} style={{marginBottom:10}}>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
+                    <div style={{fontSize:10,color:c.c,display:"flex",alignItems:"center",gap:5}}>
+                      <span style={{fontSize:12}}>{c.i}</span>{cat}
+                    </div>
+                    <div style={{fontSize:10,fontFamily:"'JetBrains Mono',monospace",color:chg===null?"#444":chg>0?"#FF6B6B":"#51CF66",fontWeight:600}}>
+                      {chg===null?"—":(chg>=0?"▲":"▼")+Math.abs(chg).toFixed(1)+"%"}
+                    </div>
+                  </div>
+                  <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                    <div style={{display:"flex",alignItems:"center",gap:6}}>
+                      <div style={{width:48,fontSize:9,color:"#555",textAlign:"right"}}>this</div>
+                      <div style={{flex:1,height:5,background:"#1A1A1A",borderRadius:3,overflow:"hidden"}}>
+                        <div style={{height:"100%",width:(tw2/max*100)+"%",background:c.c,borderRadius:3}}/>
+                      </div>
+                      <div style={{width:44,fontSize:10,fontFamily:"'JetBrains Mono',monospace",color:"#F0B429",textAlign:"right"}}>${tw2.toFixed(0)}</div>
+                    </div>
+                    <div style={{display:"flex",alignItems:"center",gap:6}}>
+                      <div style={{width:48,fontSize:9,color:"#333",textAlign:"right"}}>last</div>
+                      <div style={{flex:1,height:5,background:"#1A1A1A",borderRadius:3,overflow:"hidden"}}>
+                        <div style={{height:"100%",width:(lw2/max*100)+"%",background:"#2A2A2A",borderRadius:3}}/>
+                      </div>
+                      <div style={{width:44,fontSize:10,fontFamily:"'JetBrains Mono',monospace",color:"#444",textAlign:"right"}}>${lw2.toFixed(0)}</div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+            {Object.keys(twCats).length===0&&<div style={{fontSize:12,color:"#333",textAlign:"center",padding:"20px 0"}}>No expenses this week yet</div>}
+          </div>
+        </div>
+
+        {/* RECENT */}
+        <div style={S.card}>
+          <div style={S.secTitle}>Recent Transactions</div>
+          {exps.slice(0,8).map(e=>{
+            const c=catinfo(e.cat);
+            return(
+              <div key={e.id} style={{display:"flex",alignItems:"center",gap:12,padding:"9px 0",borderBottom:"1px solid #161616"}}>
+                <div style={{width:34,height:34,borderRadius:9,background:c.c+"18",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0}}>{c.i}</div>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:13,fontWeight:500,color:"#E0E0E0",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
+                    {e.desc||e.cat}
+                    {e.siri&&<span style={{fontSize:9,color:"#339AF0",background:"rgba(51,154,240,0.1)",padding:"1px 6px",borderRadius:4,marginLeft:6}}>Siri</span>}
+                  </div>
+                  <div style={{fontSize:10,color:"#444",marginTop:1}}>{e.cat} · {fmtDate(e.date)}</div>
+                </div>
+                <div style={{fontFamily:"'JetBrains Mono',monospace",fontSize:14,fontWeight:600,color:"#F0B429",flexShrink:0}}>{fmtAmt(e.amt)}</div>
+                <button onClick={()=>delExp(e.id)} style={{background:"none",border:"none",color:"#FF6B6B",fontSize:12,cursor:"pointer",opacity:0.35,padding:"4px 6px",flexShrink:0}}>✕</button>
+              </div>
+            );
+          })}
+          {exps.length===0&&<div style={{textAlign:"center",padding:"28px 0",color:"#333",fontSize:13}}>No expenses yet — tap + to add one</div>}
+        </div>
+      </>)}
+
+      {tab==="transactions"&&(
+        <div style={S.card}>
+          <div style={S.secTitle}>All Transactions</div>
+          {exps.length===0&&<div style={{textAlign:"center",padding:"28px 0",color:"#333",fontSize:13}}>No expenses yet</div>}
+          {exps.map(e=>{
+            const c=catinfo(e.cat);
+            return(
+              <div key={e.id} style={{display:"flex",alignItems:"center",gap:12,padding:"10px 0",borderBottom:"1px solid #161616"}}>
+                <div style={{width:34,height:34,borderRadius:9,background:c.c+"18",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0}}>{c.i}</div>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:13,fontWeight:500,color:"#E0E0E0"}}>{e.desc||e.cat}</div>
+                  <div style={{fontSize:10,color:"#444",marginTop:1}}>{e.cat} · {fmtDate(e.date)}</div>
+                </div>
+                <div style={{fontFamily:"'JetBrains Mono',monospace",fontSize:14,fontWeight:600,color:"#F0B429",flexShrink:0}}>{fmtAmt(e.amt)}</div>
+                <button onClick={()=>delExp(e.id)} style={{background:"none",border:"none",color:"#FF6B6B",fontSize:12,cursor:"pointer",opacity:0.35,padding:"4px 6px",flexShrink:0}}>✕</button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* FAB */}
+      <button style={S.fab} onClick={()=>setShowAdd(true)}>+</button>
+
+      {/* ADD MODAL */}
+      {showAdd&&(
+        <div style={S.overlay} onClick={e=>e.target===e.currentTarget&&setShowAdd(false)}>
+          <div style={S.modal}>
+            <div style={{fontSize:20,fontWeight:600,color:"#fff",marginBottom:20}}>Add Expense</div>
+            <input style={{...S.input,fontFamily:"'JetBrains Mono',monospace",fontSize:28,fontWeight:700,color:"#F0B429",background:"#0C0C0C"}}
+              type="number" placeholder="0.00" min="0" step="0.01" value={form.amt}
+              onChange={e=>setForm({...form,amt:e.target.value})} autoFocus/>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6,marginBottom:12}}>
+              {CATS.map(c=>(
+                <div key={c.n} style={S.chip(form.cat===c.n)} onClick={()=>setForm({...form,cat:c.n})}>
+                  <div style={{fontSize:18,marginBottom:3}}>{c.i}</div>
+                  <div style={{fontSize:8,color:form.cat===c.n?"#F0B429":"#555",lineHeight:1.2}}>{c.n.split(" ")[0]}</div>
+                </div>
+              ))}
+            </div>
+            <input style={S.input} type="text" placeholder="Description (optional)" value={form.desc}
+              onChange={e=>setForm({...form,desc:e.target.value})}/>
+            <input style={S.input} type="date" value={form.date}
+              onChange={e=>setForm({...form,date:e.target.value})}/>
+            <button style={S.btn} onClick={addExp}>Add Expense</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
